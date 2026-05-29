@@ -427,3 +427,12 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+/build/*
+/test/*
+msvs/vapoursynth-nvof/.vs
+msvs/vapoursynth-nvof/.vs/*
+msvs/vapoursynth-nvof/vapoursynth-nvof.vcxproj.filters
+msvs/vapoursynth-nvof/vapoursynth-nvof.vcxproj.user
+*.code-workspace
+notes/history.md
