@@ -28,12 +28,24 @@
 
 #include "nvidia-optical-flow-api.h"
 
+#include <cstdint>
+#include <mutex>
+#include <vector>
+
+struct NVOFFlowData
+{
+	std::vector<NV_OF_FLOW_VECTOR> flow;
+	std::vector<uint8_t> cost;
+};
+
+std::mutex & nvofGlobalLock();
+
 class NVidiaOpticalFlow
 {
 public:
 	NVidiaOpticalFlow(const VSAPI * a_cpVSAPI, const VSVideoInfo & a_sourceVideoInfo,
 		bool a_chromaMotion = true, NV_OF_PERF_LEVEL a_perfLevel = NV_OF_PERF_LEVEL_SLOW,
-		bool a_getCost = false, int a_gpuID = 0);
+		bool a_getCost = false, int a_gpuID = 0, bool a_bidirectional = false);
 	virtual ~NVidiaOpticalFlow();
 
 	static NV_OF_BUFFER_FORMAT bufferFormat(const VSFormat * a_cpFormat, bool chromaMotion,
@@ -43,6 +55,9 @@ public:
 
 	bool getFlow(const VSFrameRef * a_cpCurrentFrame, const VSFrameRef * a_cpDeltaFrame,
 		VSFrameRef * a_pOutFrame, std::string & a_errorString);
+	bool getFlowData(const VSFrameRef * a_cpCurrentFrame, const VSFrameRef * a_cpDeltaFrame,
+		NVOFFlowData & a_forwardData, NVOFFlowData * a_pBackwardData,
+		std::string & a_errorString);
 private:
 	void cleanup();
 	void releaseAPI();
@@ -61,6 +76,9 @@ private:
 	bool loadRGBtoBuffer(const VSFrameRef * a_cpFrame, NvOFGPUBufferHandle a_buffer,
 		std::string & a_errorString);
 	bool downloadFlow(VSFrameRef * a_cpFrame, std::string & a_errorString);
+	bool downloadFlowData(NvOFGPUBufferHandle a_flowHandle,
+		NvOFGPUBufferHandle a_costHandle, NVOFFlowData & a_data,
+		std::string & a_errorString);
 
 	const VSAPI * m_cpVSAPI{nullptr};
 	VSVideoInfo m_sourceVideoInfo{};
@@ -68,6 +86,7 @@ private:
 	NV_OF_PERF_LEVEL m_perfLevel{NV_OF_PERF_LEVEL_SLOW};
 	bool m_getCost{false};
 	int m_gpuID{0};
+	bool m_bidirectional{false};
 	NvOFHandle m_handle{nullptr};
 	CUcontext m_context{nullptr};
 	NV_OF_BUFFER_FORMAT m_sourceBufferFormat{NV_OF_BUFFER_FORMAT_UNDEFINED};
@@ -75,6 +94,8 @@ private:
 	NvOFGPUBufferHandle m_hDeltaFrame{nullptr};
 	NvOFGPUBufferHandle m_hFlow{nullptr};
 	NvOFGPUBufferHandle m_hCost{nullptr};
+	NvOFGPUBufferHandle m_hBackwardFlow{nullptr};
+	NvOFGPUBufferHandle m_hBackwardCost{nullptr};
 	bool m_apiInitialized{false};
 	bool m_initialized{false};
 };

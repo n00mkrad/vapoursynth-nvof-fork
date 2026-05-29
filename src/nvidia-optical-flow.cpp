@@ -28,18 +28,29 @@
 #include "cuda-tools.h"
 
 #include <cassert>
+#include <mutex>
+
+//==============================================================================
+
+std::mutex & nvofGlobalLock()
+{
+	static std::mutex lock;
+	return lock;
+}
 
 //==============================================================================
 
 NVidiaOpticalFlow::NVidiaOpticalFlow(const VSAPI * a_cpVSAPI,
 	const VSVideoInfo & a_sourceVideoInfo, bool a_chromaMotion,
-	NV_OF_PERF_LEVEL a_perfLevel, bool a_getCost, int a_gpuID):
+	NV_OF_PERF_LEVEL a_perfLevel, bool a_getCost, int a_gpuID,
+	bool a_bidirectional):
 	  m_cpVSAPI(a_cpVSAPI)
 	, m_sourceVideoInfo(a_sourceVideoInfo)
 	, m_chromaMotion(a_chromaMotion)
 	, m_perfLevel(a_perfLevel)
 	, m_getCost(a_getCost)
 	, m_gpuID(a_gpuID)
+	, m_bidirectional(a_bidirectional)
 {
 	assert(m_cpVSAPI);
 }
@@ -220,6 +231,95 @@ bool NVidiaOpticalFlow::getFlow(const VSFrameRef * a_cpCurrentFrame,
 
 //==============================================================================
 
+bool NVidiaOpticalFlow::getFlowData(const VSFrameRef * a_cpCurrentFrame,
+	const VSFrameRef * a_cpDeltaFrame, NVOFFlowData & a_forwardData,
+	NVOFFlowData * a_pBackwardData, std::string & a_errorString)
+{
+	if(a_pBackwardData && !m_bidirectional)
+	{
+		a_errorString = "Backward flow data was requested from a forward-only flow calculator.";
+		return false;
+	}
+
+	const VSFormat * cpCurrentFormat = m_cpVSAPI->getFrameFormat(a_cpCurrentFrame);
+	const VSFormat * cpDeltaFormat = m_cpVSAPI->getFrameFormat(a_cpDeltaFrame);
+	if((m_sourceVideoInfo.format != cpCurrentFormat) || (cpCurrentFormat != cpDeltaFormat))
+	{
+		a_errorString = "Input frame format changed.";
+		return false;
+	}
+
+	if(m_sourceBufferFormat == NV_OF_BUFFER_FORMAT_NV12)
+	{
+		if(!loadYUV420toBuffer(a_cpCurrentFrame, m_hSourceFrame, a_errorString))
+			return false;
+		if(!loadYUV420toBuffer(a_cpDeltaFrame, m_hDeltaFrame, a_errorString))
+			return false;
+	}
+	else if(m_sourceBufferFormat == NV_OF_BUFFER_FORMAT_GRAYSCALE8)
+	{
+		if(!loadLumaToBuffer(a_cpCurrentFrame, m_hSourceFrame, a_errorString))
+			return false;
+		if(!loadLumaToBuffer(a_cpDeltaFrame, m_hDeltaFrame, a_errorString))
+			return false;
+	}
+	else if(m_sourceBufferFormat == NV_OF_BUFFER_FORMAT_ABGR8)
+	{
+		if(!loadRGBtoBuffer(a_cpCurrentFrame, m_hSourceFrame, a_errorString))
+			return false;
+		if(!loadRGBtoBuffer(a_cpDeltaFrame, m_hDeltaFrame, a_errorString))
+			return false;
+	}
+	else
+	{
+		a_errorString = "Invalid source buffer format.";
+		return false;
+	}
+
+	NV_OF_EXECUTE_INPUT_PARAMS inputParams{0};
+	inputParams.inputFrame = m_hSourceFrame;
+	inputParams.referenceFrame = m_hDeltaFrame;
+	inputParams.externalHints = nullptr;
+	inputParams.disableTemporalHints = NV_OF_TRUE;
+	inputParams.padding = 0;
+	inputParams.hPrivData = nullptr;
+	inputParams.padding2 = 0;
+	inputParams.numRois = 0;
+	inputParams.roiData = nullptr;
+
+	NV_OF_EXECUTE_OUTPUT_PARAMS outputParams{0};
+	outputParams.outputBuffer = m_hFlow;
+	outputParams.outputCostBuffer = m_getCost ? m_hCost : nullptr;
+	outputParams.hPrivData = nullptr;
+	outputParams.bwdOutputBuffer = a_pBackwardData ? m_hBackwardFlow : nullptr;
+	outputParams.bwdOutputCostBuffer = (a_pBackwardData && m_getCost) ? m_hBackwardCost : nullptr;
+	outputParams.globalFlowBuffer = nullptr;
+
+	if(!pushContext(a_errorString))
+		return false;
+	NV_OF_STATUS result = NVidiaOpticalFlowAPI::getAPI()->nvOFExecute(m_handle,
+		&inputParams, &outputParams);
+	if(!popContext(a_errorString))
+		return false;
+	if(result != NV_OF_SUCCESS)
+	{
+		a_errorString = std::string("Failed to execute optical flow. ") +
+			NVidiaOpticalFlowAPI::getErrorDescription(result);
+		return false;
+	}
+
+	if(!downloadFlowData(m_hFlow, m_getCost ? m_hCost : nullptr, a_forwardData,
+		a_errorString))
+		return false;
+	if(a_pBackwardData && !downloadFlowData(m_hBackwardFlow,
+		m_getCost ? m_hBackwardCost : nullptr, *a_pBackwardData, a_errorString))
+		return false;
+
+	return true;
+}
+
+//==============================================================================
+
 void NVidiaOpticalFlow::cleanup()
 {
 	destroyBuffers();
@@ -284,7 +384,7 @@ bool NVidiaOpticalFlow::initNVOF(std::string & a_errorString)
 	params.hPrivData = 0;
 	params.disparityRange = NV_OF_STEREO_DISPARITY_RANGE_UNDEFINED;
 	params.enableRoi = NV_OF_FALSE;
-	params.predDirection = NV_OF_PRED_DIRECTION_FORWARD;
+	params.predDirection = m_bidirectional ? NV_OF_PRED_DIRECTION_BOTH : NV_OF_PRED_DIRECTION_FORWARD;
 	params.enableGlobalFlow = NV_OF_FALSE;
 	params.inputBufferFormat = m_sourceBufferFormat;
 
@@ -340,11 +440,16 @@ bool NVidiaOpticalFlow::createBuffers(std::string & a_errorString)
 		{&m_hDeltaFrame, NV_OF_BUFFER_USAGE_INPUT, m_sourceBufferFormat},
 		{&m_hFlow, NV_OF_BUFFER_USAGE_OUTPUT, NV_OF_BUFFER_FORMAT_SHORT2},
 		{&m_hCost, NV_OF_BUFFER_USAGE_COST, NV_OF_BUFFER_FORMAT_UINT8},
+		{&m_hBackwardFlow, NV_OF_BUFFER_USAGE_OUTPUT, NV_OF_BUFFER_FORMAT_SHORT2},
+		{&m_hBackwardCost, NV_OF_BUFFER_USAGE_COST, NV_OF_BUFFER_FORMAT_UINT8},
 	};
 
 	for(const BufferInitInfo & info : buffersToInit)
 	{
 		if((info.usage == NV_OF_BUFFER_USAGE_COST) && (!m_getCost))
+			continue;
+		if(((info.pHandle == &m_hBackwardFlow) || (info.pHandle == &m_hBackwardCost)) &&
+			(!m_bidirectional))
 			continue;
 
 		descriptor.bufferUsage = info.usage;
@@ -368,7 +473,7 @@ bool NVidiaOpticalFlow::createBuffers(std::string & a_errorString)
 void NVidiaOpticalFlow::destroyBuffers()
 {
 	NvOFGPUBufferHandle * buffers[] = {&m_hSourceFrame, &m_hDeltaFrame,
-		&m_hFlow, &m_hCost};
+		&m_hFlow, &m_hCost, &m_hBackwardFlow, &m_hBackwardCost};
 	for(NvOFGPUBufferHandle * pHandle : buffers)
 	{
 		if(!(*pHandle))
@@ -719,6 +824,86 @@ bool NVidiaOpticalFlow::downloadFlow(VSFrameRef * a_pFrame, std::string & a_erro
 	}
 
 	return true;
+}
+
+//==============================================================================
+
+bool NVidiaOpticalFlow::downloadFlowData(NvOFGPUBufferHandle a_flowHandle,
+	NvOFGPUBufferHandle a_costHandle, NVOFFlowData & a_data,
+	std::string & a_errorString)
+{
+	if(!pushContext(a_errorString))
+		return false;
+
+	const size_t width = m_sourceVideoInfo.width;
+	const size_t height = m_sourceVideoInfo.height;
+	const size_t flowTempBufferSize = width * height;
+	const size_t flowTempBufferStride = width * sizeof(NV_OF_FLOW_VECTOR);
+	a_data.flow.assign(flowTempBufferSize, {0});
+	a_data.cost.assign(width * height, 0);
+
+	CUdeviceptr flowDevicePtr = NVidiaOpticalFlowAPI::getAPI()->nvOFGPUBufferGetCUdeviceptr(a_flowHandle);
+
+	NV_OF_CUDA_BUFFER_STRIDE_INFO strideInfo{};
+	NV_OF_STATUS nvResult = NVidiaOpticalFlowAPI::getAPI()->nvOFGPUBufferGetStrideInfo(
+		a_flowHandle, &strideInfo);
+	if(nvResult != NV_OF_SUCCESS)
+	{
+		popContext(a_errorString);
+		a_errorString = std::string("Failed to get flow buffer stride info. ") +
+			NVidiaOpticalFlowAPI::getErrorDescription(nvResult);
+		return false;
+	}
+
+	CUDA_MEMCPY2D cuCopy2d{0};
+	cuCopy2d.WidthInBytes = flowTempBufferStride;
+	cuCopy2d.dstMemoryType = CU_MEMORYTYPE_HOST;
+	cuCopy2d.dstHost = a_data.flow.data();
+	cuCopy2d.dstPitch = flowTempBufferStride;
+	cuCopy2d.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+	cuCopy2d.srcDevice = flowDevicePtr;
+	cuCopy2d.srcPitch = strideInfo.strideInfo[0].strideXInBytes;
+	cuCopy2d.Height = height;
+
+	CUresult cuResult = cuMemcpy2D(&cuCopy2d);
+	if(cuResult != CUDA_SUCCESS)
+	{
+		popContext(a_errorString);
+		a_errorString = std::string("Failed to download flow from CUDA buffer. ") +
+			NVidiaOpticalFlowAPI::getErrorDescription(cuResult);
+		return false;
+	}
+
+	if(a_costHandle)
+	{
+		CUdeviceptr costDevicePtr = NVidiaOpticalFlowAPI::getAPI()->nvOFGPUBufferGetCUdeviceptr(a_costHandle);
+		nvResult = NVidiaOpticalFlowAPI::getAPI()->nvOFGPUBufferGetStrideInfo(
+			a_costHandle, &strideInfo);
+		if(nvResult != NV_OF_SUCCESS)
+		{
+			popContext(a_errorString);
+			a_errorString = std::string("Failed to get cost buffer stride info. ") +
+				NVidiaOpticalFlowAPI::getErrorDescription(nvResult);
+			return false;
+		}
+
+		cuCopy2d.WidthInBytes = width;
+		cuCopy2d.dstHost = a_data.cost.data();
+		cuCopy2d.dstPitch = width;
+		cuCopy2d.srcDevice = costDevicePtr;
+		cuCopy2d.srcPitch = strideInfo.strideInfo[0].strideXInBytes;
+
+		cuResult = cuMemcpy2D(&cuCopy2d);
+		if(cuResult != CUDA_SUCCESS)
+		{
+			popContext(a_errorString);
+			a_errorString = std::string("Failed to download cost from CUDA buffer. ") +
+				NVidiaOpticalFlowAPI::getErrorDescription(cuResult);
+			return false;
+		}
+	}
+
+	return popContext(a_errorString);
 }
 
 //==============================================================================

@@ -153,7 +153,7 @@ void VS_CC createShow(const VSMap * a_pIn, VSMap * a_pOut, void * a_pUserData,
 		(cpFormat == a_cpVSAPI->getFormatPreset(pfYUV444PS, a_pCore));
 	if(!acceptableFormat)
 	{
-		a_cpVSAPI->setError(a_pOut, "nvof.show: "
+		a_cpVSAPI->setError(a_pOut, "nvof.Show: "
 			"input clip format doesn't match the NVOF flow format.");
 		return;
 	}
@@ -212,7 +212,7 @@ void VS_CC createShow(const VSMap * a_pIn, VSMap * a_pOut, void * a_pUserData,
 
 	DataShow * pInternalData = new DataShow;
 	*pInternalData = std::move(internalData);
-	a_cpVSAPI->createFilter(a_pIn, a_pOut, "show", initShow,
+	a_cpVSAPI->createFilter(a_pIn, a_pOut, "Show", initShow,
 		getFrameShow, freeShow, fmParallel, 0, pInternalData, a_pCore);
 }
 

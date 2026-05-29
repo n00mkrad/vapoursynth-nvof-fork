@@ -35,8 +35,6 @@
 //==============================================================================
 // Dedicated optical flow worker
 
-static std::mutex g_nvofWorkerLock;
-
 class NVidiaOpticalFlowWorker
 {
 public:
@@ -100,7 +98,7 @@ private:
 			std::string errorString;
 			bool success = false;
 			{
-				std::lock_guard<std::mutex> nvofLock(g_nvofWorkerLock);
+				std::lock_guard<std::mutex> nvofLock(nvofGlobalLock());
 				success = pFlow->init(errorString);
 				if(success)
 					success = pFlow->getFlow(cpCurrentFrame, cpDeltaFrame, pOutFrame,
@@ -118,7 +116,7 @@ private:
 			m_condition.notify_one();
 		}
 
-		std::lock_guard<std::mutex> nvofLock(g_nvofWorkerLock);
+		std::lock_guard<std::mutex> nvofLock(nvofGlobalLock());
 		pFlow.reset();
 	}
 
@@ -185,7 +183,7 @@ void VS_CC createGetFlow(const VSMap * a_pIn, VSMap * a_pOut, void * a_pUserData
 		(pInternalData->cpSourceVideoInfo->numFrames != 0);
 	if(!acceptableFormat)
 	{
-		a_cpVSAPI->setError(a_pOut, "nvof.getFlow: "
+		a_cpVSAPI->setError(a_pOut, "nvof.GetFlow: "
 			"only constant format input with fixed frame number is supported.");
 		return;
 	}
@@ -197,7 +195,7 @@ void VS_CC createGetFlow(const VSMap * a_pIn, VSMap * a_pOut, void * a_pUserData
 	pInternalData->delta = a_cpVSAPI->propGetInt(a_pIn, "delta", 0, &error);
 	if(error != 0)
 	{
-		a_cpVSAPI->setError(a_pOut, "nvof.getFlow: "
+		a_cpVSAPI->setError(a_pOut, "nvof.GetFlow: "
 			"failed to initialize the \"delta\" argument.");
 		return;
 	}
@@ -205,7 +203,7 @@ void VS_CC createGetFlow(const VSMap * a_pIn, VSMap * a_pOut, void * a_pUserData
 	//--------------------------------------------------------------------------
 	// chromaMotion
 
-	pInternalData->chromaMotion = a_cpVSAPI->propGetInt(a_pIn, "chromaMotion", 0, &error);
+	pInternalData->chromaMotion = a_cpVSAPI->propGetInt(a_pIn, "chroma_motion", 0, &error);
 	if(error != 0)
 	{
 		pInternalData->chromaMotion = 1;
@@ -215,7 +213,7 @@ void VS_CC createGetFlow(const VSMap * a_pIn, VSMap * a_pOut, void * a_pUserData
 	if(NVidiaOpticalFlow::bufferFormat(pInternalData->cpSourceVideoInfo->format,
 		pInternalData->chromaMotion, errorString) == NV_OF_BUFFER_FORMAT_UNDEFINED)
 	{
-		a_cpVSAPI->setError(a_pOut, (std::string("nvof.getFlow: "
+		a_cpVSAPI->setError(a_pOut, (std::string("nvof.GetFlow: "
 			"Source format error. ") + errorString).c_str());
 		return;
 	}
@@ -240,7 +238,7 @@ void VS_CC createGetFlow(const VSMap * a_pIn, VSMap * a_pOut, void * a_pUserData
 		perfLevels.find(speed);
 	if(it == perfLevels.end())
 	{
-		a_cpVSAPI->setError(a_pOut, "nvof.getFlow: "
+		a_cpVSAPI->setError(a_pOut, "nvof.GetFlow: "
 			"Invalid value for the \"speed\" argument.\n"
 			"Acceptable values:\n"
 			"0 - slow, best quality\n"
@@ -255,7 +253,7 @@ void VS_CC createGetFlow(const VSMap * a_pIn, VSMap * a_pOut, void * a_pUserData
 	//--------------------------------------------------------------------------
 	// getCost
 
-	pInternalData->getCost = a_cpVSAPI->propGetInt(a_pIn, "getCost", 0, &error);
+	pInternalData->getCost = a_cpVSAPI->propGetInt(a_pIn, "get_cost", 0, &error);
 	if(error != 0)
 	{
 		pInternalData->getCost = false;
@@ -280,7 +278,7 @@ void VS_CC createGetFlow(const VSMap * a_pIn, VSMap * a_pOut, void * a_pUserData
 
 	//--------------------------------------------------------------------------
 
-	a_cpVSAPI->createFilter(a_pIn, a_pOut, "getFlow", initGetFlow,
+	a_cpVSAPI->createFilter(a_pIn, a_pOut, "GetFlow", initGetFlow,
 		getFrameGetFlow, freeGetFlow, fmParallelRequests, 0, pInternalData.release(), a_pCore);
 }
 
@@ -360,7 +358,7 @@ const VSFrameRef * VS_CC getFrameGetFlow(int a_n, int a_activationReason,
 		if(!pInternalData->pFlowWorker->getFlow(cpCurrentFrame, cpDeltaFrame, pOutFrame,
 			errorString))
 		{
-			a_cpVSAPI->setFilterError((std::string("nvof.getFlow: ") +
+			a_cpVSAPI->setFilterError((std::string("nvof.GetFlow: ") +
 				errorString).c_str(), a_pFrameCtx);
 			a_cpVSAPI->freeFrame(cpCurrentFrame);
 			a_cpVSAPI->freeFrame(cpDeltaFrame);

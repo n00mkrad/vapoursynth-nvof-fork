@@ -87,7 +87,7 @@ void VS_CC createCorrelation(const VSMap * a_pIn, VSMap * a_pOut, void * a_pUser
 		(internalData.cpSourceVideoInfo->numFrames != 0);
 	if(!acceptableFormat)
 	{
-		a_cpVSAPI->setError(a_pOut, "nvof.correlation: "
+		a_cpVSAPI->setError(a_pOut, "nvof.Correlation: "
 			"unacceptable input clip format.");
 		return;
 	}
@@ -98,7 +98,7 @@ void VS_CC createCorrelation(const VSMap * a_pIn, VSMap * a_pOut, void * a_pUser
 		(internalData.cpSourceVideoInfo->numFrames == cpCompensatedVideoInfo->numFrames);
 	if(!equalClips)
 	{
-		a_cpVSAPI->setError(a_pOut, "nvof.correlation: "
+		a_cpVSAPI->setError(a_pOut, "nvof.Correlation: "
 			"source and compensated clip format and frame number must match.");
 		return;
 	}
@@ -121,7 +121,7 @@ void VS_CC createCorrelation(const VSMap * a_pIn, VSMap * a_pOut, void * a_pUser
 
 	DataCorrelation * pInternalData = new DataCorrelation;
 	*pInternalData = std::move(internalData);
-	a_cpVSAPI->createFilter(a_pIn, a_pOut, "correlation", initCorrelation,
+	a_cpVSAPI->createFilter(a_pIn, a_pOut, "Correlation", initCorrelation,
 		getFrameCorrelation, freeCorrelation, fmParallel, 0, pInternalData, a_pCore);
 }
 

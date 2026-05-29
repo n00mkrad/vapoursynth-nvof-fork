@@ -29,6 +29,8 @@ CreateVSNodeFun createGetFlow;
 CreateVSNodeFun createShow;
 CreateVSNodeFun createCompensate;
 CreateVSNodeFun createCorrelation;
+CreateVSNodeFun createToMVTools;
+CreateVSNodeFun createGetMVTools;
 
 //==============================================================================
 
@@ -39,32 +41,60 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin a_configFunc,
 		"nVidia optical flow tools",
 		VAPOURSYNTH_API_VERSION, 1, a_pPlugin);
 
-	a_registerFunc("getFlow",
+	a_registerFunc("GetFlow",
 		"clip:clip;"
 		"delta:int;"
-		"chromaMotion:int:opt;"
+		"chroma_motion:int:opt;"
 		"speed:int:opt;"
-		"getCost:int:opt;"
+		"get_cost:int:opt;"
 		"gpu:int:opt;"
 		, createGetFlow, nullptr, a_pPlugin);
 
-	a_registerFunc("show",
+	a_registerFunc("GetMvTools",
+		"clip:clip;"
+		"source:clip:opt;"
+		"tr:int:opt;"
+		"block_size:int:opt;"
+		"block_size_v:int:opt;"
+		"overlap:int:opt;"
+		"overlap_v:int:opt;"
+		"pel:int:opt;"
+		"fallback_sad:int:opt;"
+		"clipped_sad:int:opt;"
+		"get_cost:int:opt;"
+		"gpu:int:opt;"
+		, createGetMVTools, nullptr, a_pPlugin);
+
+	a_registerFunc("Show",
 		"clip:clip;"
 		"mode:int;"
 		"amplify:float:opt;"
 		, createShow, nullptr, a_pPlugin);
 
-	a_registerFunc("compensate",
+	a_registerFunc("Compensate",
 		"clip:clip;"
 		"flow:clip;"
 		"delta:int;"
 		, createCompensate, nullptr, a_pPlugin);
 
-	a_registerFunc("correlation",
+	a_registerFunc("Correlation",
 		"clip:clip;"
 		"compensated:clip;"
 		"radius:int:opt;"
 		, createCorrelation, nullptr, a_pPlugin);
+
+    a_registerFunc("ToMvTools",
+        "flow:clip;"
+        "clip:clip;"
+        "delta:int;"
+        "block_size:int:opt;"
+        "block_size_v:int:opt;"
+        "overlap:int:opt;"
+        "overlap_v:int:opt;"
+        "pel:int:opt;"
+        "fallback_sad:int:opt;"
+        "clipped_sad:int:opt;"
+        , createToMVTools, nullptr, a_pPlugin);
 }
 
 //==============================================================================

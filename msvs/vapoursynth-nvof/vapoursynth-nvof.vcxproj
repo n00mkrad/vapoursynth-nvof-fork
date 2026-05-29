@@ -22,14 +22,18 @@
     <ClCompile Include="..\..\src\compensate.cpp" />
     <ClCompile Include="..\..\src\correlation.cpp" />
     <ClCompile Include="..\..\src\get_flow.cpp" />
+    <ClCompile Include="..\..\src\get_mvtools.cpp" />
     <ClCompile Include="..\..\src\main.cpp" />
+    <ClCompile Include="..\..\src\mvtools_helpers.cpp" />
     <ClCompile Include="..\..\src\nvidia-optical-flow-api.cpp" />
     <ClCompile Include="..\..\src\nvidia-optical-flow.cpp" />
     <ClCompile Include="..\..\src\show.cpp" />
+    <ClCompile Include="..\..\src\to_mvtools.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\src\common.h" />
     <ClInclude Include="..\..\src\cuda-tools.h" />
+    <ClInclude Include="..\..\src\mvtools_helpers.h" />
     <ClInclude Include="..\..\src\nvidia-optical-flow-api.h" />
     <ClInclude Include="..\..\src\nvidia-optical-flow.h" />
     <ClInclude Include="..\..\src\nvOpticalFlowCommon.h" />
