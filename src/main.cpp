@@ -63,6 +63,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin a_configFunc,
 		"clipped_sad:int:opt;"
 		"get_cost:int:opt;"
 		"gpu:int:opt;"
+		"bidirectional:int:opt;"
 		, createGetMVTools, nullptr, a_pPlugin);
 
 	a_registerFunc("Show",

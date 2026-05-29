@@ -62,11 +62,13 @@ class NVidiaOpticalFlowDataWorker
 {
 public:
     NVidiaOpticalFlowDataWorker(const VSAPI * a_cpVSAPI,
-        const VSVideoInfo & a_inputVideoInfo, bool a_getCost, int a_gpu):
+        const VSVideoInfo & a_inputVideoInfo, bool a_getCost, int a_gpu,
+        bool a_bidirectional):
           m_cpVSAPI(a_cpVSAPI)
         , m_inputVideoInfo(a_inputVideoInfo)
         , m_getCost(a_getCost)
         , m_gpu(a_gpu)
+        , m_bidirectional(a_bidirectional)
     {
         m_thread = std::thread(&NVidiaOpticalFlowDataWorker::threadMain, this);
     }
@@ -84,11 +86,13 @@ public:
 
     bool getFlowData(const VSFrameRef * a_cpFirstFrame,
         const VSFrameRef * a_cpSecondFrame, NVOFFlowData & a_forwardData,
-        NVOFFlowData & a_backwardData, std::string & a_errorString)
+        NVOFFlowData * a_pBackwardData, std::string & a_errorString)
     {
+        std::lock_guard<std::mutex> requestLock(m_requestLock);
         std::unique_lock<std::mutex> lock(m_lock);
         m_cpFirstFrame = a_cpFirstFrame;
         m_cpSecondFrame = a_cpSecondFrame;
+        m_backwardRequested = a_pBackwardData != nullptr;
         m_forwardData = NVOFFlowData{};
         m_backwardData = NVOFFlowData{};
         m_success = false;
@@ -98,7 +102,8 @@ public:
         m_condition.notify_one();
         m_condition.wait(lock, [this] { return m_responseReady; });
         a_forwardData = std::move(m_forwardData);
-        a_backwardData = std::move(m_backwardData);
+        if(a_pBackwardData)
+            *a_pBackwardData = std::move(m_backwardData);
         a_errorString = m_errorString;
         return m_success;
     }
@@ -106,7 +111,8 @@ private:
     void threadMain()
     {
         std::unique_ptr<NVidiaOpticalFlow> pFlow(new NVidiaOpticalFlow(m_cpVSAPI,
-            m_inputVideoInfo, true, NV_OF_PERF_LEVEL_SLOW, m_getCost, m_gpu, true));
+            m_inputVideoInfo, true, NV_OF_PERF_LEVEL_SLOW, m_getCost, m_gpu,
+            m_bidirectional));
         while(true)
         {
             std::unique_lock<std::mutex> lock(m_lock);
@@ -116,6 +122,7 @@ private:
 
             const VSFrameRef * cpFirstFrame = m_cpFirstFrame;
             const VSFrameRef * cpSecondFrame = m_cpSecondFrame;
+            const bool backwardRequested = m_backwardRequested;
             m_requestPending = false;
             lock.unlock();
 
@@ -128,7 +135,8 @@ private:
                 success = pFlow->init(errorString);
                 if(success)
                     success = pFlow->getFlowData(cpFirstFrame, cpSecondFrame,
-                        forwardData, &backwardData, errorString);
+                        forwardData, backwardRequested ? &backwardData : nullptr,
+                        errorString);
                 else
                     errorString = std::string("failed to initialize the flow calculator. ") +
                         errorString;
@@ -152,11 +160,14 @@ private:
     VSVideoInfo m_inputVideoInfo{};
     bool m_getCost{false};
     int m_gpu{0};
+    bool m_bidirectional{false};
     std::thread m_thread;
+    std::mutex m_requestLock;
     std::mutex m_lock;
     std::condition_variable m_condition;
     const VSFrameRef * m_cpFirstFrame{nullptr};
     const VSFrameRef * m_cpSecondFrame{nullptr};
+    bool m_backwardRequested{false};
     NVOFFlowData m_forwardData;
     NVOFFlowData m_backwardData;
     bool m_requestPending{false};
@@ -170,12 +181,13 @@ class SharedGetMVTools
 {
 public:
     SharedGetMVTools(const VSAPI * a_cpVSAPI, const VSVideoInfo & a_inputVideoInfo,
-        bool a_getCost, int a_gpu, int a_tr):
+        bool a_getCost, int a_gpu, int a_tr, bool a_bidirectional):
           m_cpVSAPI(a_cpVSAPI)
         , m_inputVideoInfo(a_inputVideoInfo)
         , m_getCost(a_getCost)
         , m_gpu(a_gpu)
         , m_tr(a_tr)
+        , m_bidirectional(a_bidirectional)
     {
     }
 
@@ -186,36 +198,96 @@ public:
         std::string & a_errorString)
     {
         const PairKey key{a_firstFrame, a_secondFrame};
-        std::lock_guard<std::mutex> lock(m_lock);
-
-        std::map<PairKey, PairBlobs>::const_iterator it = m_cache.find(key);
-        if(it != m_cache.end())
         {
-            a_blobs = it->second;
-            return true;
+            std::lock_guard<std::mutex> lock(m_lock);
+            std::map<PairKey, PairBlobs>::const_iterator it = m_cache.find(key);
+            if(it != m_cache.end())
+            {
+                a_blobs = it->second;
+                return true;
+            }
         }
 
-        if(!m_pFlowWorker)
-            m_pFlowWorker.reset(new NVidiaOpticalFlowDataWorker(m_cpVSAPI,
-                m_inputVideoInfo, m_getCost, m_gpu));
+        NVidiaOpticalFlowDataWorker * pFlowWorker = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            if(!m_pFlowWorker)
+                m_pFlowWorker.reset(new NVidiaOpticalFlowDataWorker(m_cpVSAPI,
+                    m_inputVideoInfo, m_getCost, m_gpu, true));
+            pFlowWorker = m_pFlowWorker.get();
+        }
 
         NVOFFlowData forwardData;
         NVOFFlowData backwardData;
-        if(!m_pFlowWorker->getFlowData(a_cpFirstFrame, a_cpSecondFrame,
-            forwardData, backwardData, a_errorString))
+        if(!pFlowWorker->getFlowData(a_cpFirstFrame, a_cpSecondFrame,
+            forwardData, &backwardData, a_errorString))
             return false;
 
         PairBlobs newBlobs;
         newBlobs.forward = makeNVOFVectorBlob(a_forwardConfig, forwardData);
         newBlobs.backward = makeNVOFVectorBlob(a_backwardConfig, backwardData);
         a_blobs = newBlobs;
-        m_cache[key] = std::move(newBlobs);
 
-        const size_t maxCachedPairs = (size_t)m_tr * 8 + 8;
-        while(m_cache.size() > maxCachedPairs)
-            m_cache.erase(m_cache.begin());
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            m_cache[key] = std::move(newBlobs);
+
+            const size_t maxCachedPairs = (size_t)m_tr * 8 + 8;
+            while(m_cache.size() > maxCachedPairs)
+                m_cache.erase(m_cache.begin());
+        }
 
         return true;
+    }
+
+    bool getForwardBlob(int a_currentFrame, int a_referenceFrame,
+        const VSFrameRef * a_cpCurrentFrame, const VSFrameRef * a_cpReferenceFrame,
+        const mvtools::Config & a_config, std::vector<uint8_t> & a_blob,
+        std::string & a_errorString)
+    {
+        const PairKey key{a_currentFrame, a_referenceFrame};
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            std::map<PairKey, std::vector<uint8_t>>::const_iterator it =
+                m_forwardCache.find(key);
+            if(it != m_forwardCache.end())
+            {
+                a_blob = it->second;
+                return true;
+            }
+        }
+
+        NVidiaOpticalFlowDataWorker * pFlowWorker = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            if(!m_pFlowWorker)
+                m_pFlowWorker.reset(new NVidiaOpticalFlowDataWorker(m_cpVSAPI,
+                    m_inputVideoInfo, m_getCost, m_gpu, false));
+            pFlowWorker = m_pFlowWorker.get();
+        }
+
+        NVOFFlowData forwardData;
+        if(!pFlowWorker->getFlowData(a_cpCurrentFrame, a_cpReferenceFrame,
+            forwardData, nullptr, a_errorString))
+            return false;
+
+        a_blob = makeNVOFVectorBlob(a_config, forwardData);
+
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            m_forwardCache[key] = a_blob;
+
+            const size_t maxCachedPairs = (size_t)m_tr * 16 + 16;
+            while(m_forwardCache.size() > maxCachedPairs)
+                m_forwardCache.erase(m_forwardCache.begin());
+        }
+
+        return true;
+    }
+
+    bool bidirectional() const
+    {
+        return m_bidirectional;
     }
 private:
     std::vector<uint8_t> makeNVOFVectorBlob(const mvtools::Config & a_config,
@@ -241,8 +313,10 @@ private:
     bool m_getCost{false};
     int m_gpu{0};
     int m_tr{1};
+    bool m_bidirectional{false};
     std::unique_ptr<NVidiaOpticalFlowDataWorker> m_pFlowWorker;
     std::map<PairKey, PairBlobs> m_cache;
+    std::map<PairKey, std::vector<uint8_t>> m_forwardCache;
     std::mutex m_lock;
 };
 
@@ -388,6 +462,7 @@ void VS_CC createGetMVTools(const VSMap * a_pIn, VSMap * a_pOut,
     int64_t clippedSAD = getOptionalIntGetMVTools(a_pIn, "clipped_sad", -1, a_cpVSAPI);
     int64_t getCost64 = getOptionalIntGetMVTools(a_pIn, "get_cost", 0, a_cpVSAPI);
     int64_t gpu64 = getOptionalIntGetMVTools(a_pIn, "gpu", 0, a_cpVSAPI);
+    int64_t bidirectional64 = getOptionalIntGetMVTools(a_pIn, "bidirectional", 0, a_cpVSAPI);
 
     if(!validateIntRangeGetMVTools(tr64, "tr", a_pOut, a_cpVSAPI) ||
         !validateIntRangeGetMVTools(blockSizeX64, "block_size", a_pOut, a_cpVSAPI) ||
@@ -448,7 +523,8 @@ void VS_CC createGetMVTools(const VSMap * a_pIn, VSMap * a_pOut,
     pTemplateData->tr = tr;
     pTemplateData->mvtoolsConfigs = mvtoolsConfigs;
     pTemplateData->pShared = std::make_shared<SharedGetMVTools>(a_cpVSAPI,
-        *pTemplateData->cpInputVideoInfo, getCost64 != 0, (int)gpu64, tr);
+        *pTemplateData->cpInputVideoInfo, getCost64 != 0, (int)gpu64, tr,
+        bidirectional64 != 0);
 
     for(int outputIndex = 0; outputIndex < tr * 2; ++outputIndex)
     {
@@ -509,29 +585,39 @@ const VSFrameRef * VS_CC getFrameGetMVTools(int a_n, int a_activationReason,
     const int outputIndex = pInternalData->outputIndex;
     const int distance = outputIndex / 2 + 1;
     const bool isBackward = (outputIndex & 1) == 0;
+    const bool bidirectional = pInternalData->pShared->bidirectional();
     const int firstFrame = isBackward ? a_n : a_n - distance;
     const int secondFrame = isBackward ? a_n + distance : a_n;
-    const bool valid = (firstFrame >= 0) && (secondFrame < framesNumber);
+    const int referenceFrame = a_n + (isBackward ? distance : -distance);
+    const bool valid = bidirectional ?
+        ((firstFrame >= 0) && (secondFrame < framesNumber)) :
+        ((referenceFrame >= 0) && (referenceFrame < framesNumber));
 
     if(a_activationReason == arInitial)
     {
-        a_cpVSAPI->requestFrameFilter(a_n, pInternalData->pSourceNode.get(), a_pFrameCtx);
-        if(valid)
+        if(valid && bidirectional)
         {
             a_cpVSAPI->requestFrameFilter(firstFrame, pInternalData->pInputNode.get(), a_pFrameCtx);
             a_cpVSAPI->requestFrameFilter(secondFrame, pInternalData->pInputNode.get(), a_pFrameCtx);
         }
+        else if(valid)
+        {
+            a_cpVSAPI->requestFrameFilter(a_n, pInternalData->pInputNode.get(), a_pFrameCtx);
+            a_cpVSAPI->requestFrameFilter(referenceFrame, pInternalData->pInputNode.get(), a_pFrameCtx);
+        }
+        else
+            a_cpVSAPI->requestFrameFilter(a_n, pInternalData->pInputNode.get(), a_pFrameCtx);
         return nullptr;
     }
     else if(a_activationReason != arAllFramesReady)
         return nullptr;
 
-    const VSFrameRef * cpSourceFrame = a_cpVSAPI->getFrameFilter(a_n,
-        pInternalData->pSourceNode.get(), a_pFrameCtx);
+    const VSFrameRef * cpPropFrame = valid ? nullptr :
+        a_cpVSAPI->getFrameFilter(a_n, pInternalData->pInputNode.get(), a_pFrameCtx);
 
     VSFrameRef * pOutFrame = a_cpVSAPI->newVideoFrame(pInternalData->videoInfo.format,
         pInternalData->videoInfo.width, pInternalData->videoInfo.height,
-        cpSourceFrame, a_pCore);
+        cpPropFrame, a_pCore);
 
     uint8_t * pDstRow = a_cpVSAPI->getWritePtr(pOutFrame, PLANE_Y);
     const int dstStride = a_cpVSAPI->getStride(pOutFrame, PLANE_Y);
@@ -539,7 +625,7 @@ const VSFrameRef * VS_CC getFrameGetMVTools(int a_n, int a_activationReason,
 
     std::vector<uint8_t> vectorBlob;
     const mvtools::Config & config = pInternalData->mvtoolsConfigs[outputIndex];
-    if(valid)
+    if(valid && bidirectional)
     {
         const VSFrameRef * cpFirstFrame = a_cpVSAPI->getFrameFilter(firstFrame,
             pInternalData->pInputNode.get(), a_pFrameCtx);
@@ -556,7 +642,8 @@ const VSFrameRef * VS_CC getFrameGetMVTools(int a_n, int a_activationReason,
         {
             a_cpVSAPI->setFilterError((std::string("nvof.GetMvTools: ") +
                 errorString).c_str(), a_pFrameCtx);
-            a_cpVSAPI->freeFrame(cpSourceFrame);
+            if(cpPropFrame)
+                a_cpVSAPI->freeFrame(cpPropFrame);
             a_cpVSAPI->freeFrame(cpFirstFrame);
             a_cpVSAPI->freeFrame(cpSecondFrame);
             a_cpVSAPI->freeFrame(pOutFrame);
@@ -566,6 +653,30 @@ const VSFrameRef * VS_CC getFrameGetMVTools(int a_n, int a_activationReason,
         vectorBlob = isBackward ? std::move(blobs.forward) : std::move(blobs.backward);
         a_cpVSAPI->freeFrame(cpFirstFrame);
         a_cpVSAPI->freeFrame(cpSecondFrame);
+    }
+    else if(valid)
+    {
+        const VSFrameRef * cpCurrentFrame = a_cpVSAPI->getFrameFilter(a_n,
+            pInternalData->pInputNode.get(), a_pFrameCtx);
+        const VSFrameRef * cpReferenceFrame = a_cpVSAPI->getFrameFilter(referenceFrame,
+            pInternalData->pInputNode.get(), a_pFrameCtx);
+
+        std::string errorString;
+        if(!pInternalData->pShared->getForwardBlob(a_n, referenceFrame,
+            cpCurrentFrame, cpReferenceFrame, config, vectorBlob, errorString))
+        {
+            a_cpVSAPI->setFilterError((std::string("nvof.GetMvTools: ") +
+                errorString).c_str(), a_pFrameCtx);
+            if(cpPropFrame)
+                a_cpVSAPI->freeFrame(cpPropFrame);
+            a_cpVSAPI->freeFrame(cpCurrentFrame);
+            a_cpVSAPI->freeFrame(cpReferenceFrame);
+            a_cpVSAPI->freeFrame(pOutFrame);
+            return nullptr;
+        }
+
+        a_cpVSAPI->freeFrame(cpCurrentFrame);
+        a_cpVSAPI->freeFrame(cpReferenceFrame);
     }
     else
     {
@@ -581,12 +692,15 @@ const VSFrameRef * VS_CC getFrameGetMVTools(int a_n, int a_activationReason,
     {
         a_cpVSAPI->setFilterError("nvof.GetMvTools: "
             "failed to write MVTools frame properties.", a_pFrameCtx);
-        a_cpVSAPI->freeFrame(cpSourceFrame);
+        if(cpPropFrame)
+            a_cpVSAPI->freeFrame(cpPropFrame);
         a_cpVSAPI->freeFrame(pOutFrame);
         return nullptr;
     }
 
-    a_cpVSAPI->freeFrame(cpSourceFrame);
+    if(cpPropFrame)
+        a_cpVSAPI->freeFrame(cpPropFrame);
+
     return pOutFrame;
 }
 

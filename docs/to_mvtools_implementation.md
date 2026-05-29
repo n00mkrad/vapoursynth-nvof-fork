@@ -40,3 +40,32 @@
 - Added a dedicated `NVidiaOpticalFlowDataWorker` inside `GetMvTools()` so bidirectional NVOF initialization, execution, and destruction happen on a stable worker thread.
 - Kept the existing process-wide NVOF lock around worker-thread NVOF calls and retained the shared pair cache around the worker.
 - No build was run because the prompt did not include `BUILD`.
+
+## GetMvTools Performance Mode Update
+- Investigated a performance regression where `GetMvTools` with `tr=1` was slower than the previous `GetFlow` plus `ToMvTools` loop.
+- Kept `NV_OF_PRED_DIRECTION_BOTH` available but made it opt-in through `bidirectional=True`.
+- Changed the default `GetMvTools` path to calculate each requested vector direction with regular forward-only NVOF execution, matching the old loop's NVOF mode more closely while still avoiding intermediate flow clips.
+- Added an ordered-pair forward cache for the default path and retained the existing pair cache for the bidirectional path.
+- Updated the readme to document `bidirectional` and the performance tradeoff.
+- No build was run because the prompt did not include `BUILD`.
+
+## GetMvTools Serialization Reduction
+- Investigated remaining `GetMvTools` performance gap after `bidirectional=True` and `bidirectional=False` measured similarly.
+- Removed per-output-frame source frame requests from `GetMvTools`; the `source` clip is now used for metadata only.
+- Reduced shared cache lock scope so NVOF execution and dense-to-MVTools block conversion are no longer performed while holding the cache mutex.
+- Kept cache access locked only for lookup, worker creation, insertion, and trimming.
+- No build was run because the prompt did not include `BUILD`.
+
+## GetMvTools Invalid Frame Scheduling Fix
+- Investigated a fatal VapourSynth error where `GetMvTools` returned no frame at the end of processing.
+- Identified that invalid edge vector frames requested no upstream frame after source-frame requests were removed, so VapourSynth never reached the normal all-frames-ready return path.
+- Changed invalid vector frames to request the current input frame only as a lightweight scheduling trigger and prop source.
+- Valid vector frames keep the optimized path without an extra source-frame request.
+- No build was run because the prompt did not include `BUILD`.
+
+## GetMvTools Worker Submission Race Fix
+- Investigated ghosting plus random crashes/freezes after the lock-scope reduction.
+- Identified that multiple vector output nodes could submit NVOF requests to the shared worker concurrently, overwriting the worker's single pending request slot and response fields.
+- Added a dedicated submission mutex to `NVidiaOpticalFlowDataWorker::getFlowData()` so only one request can be in flight through the worker at a time.
+- Kept dense-to-MVTools block conversion outside the submission mutex so CPU conversion can still overlap with later scheduling where possible.
+- No build was run because the prompt did not include `BUILD`.

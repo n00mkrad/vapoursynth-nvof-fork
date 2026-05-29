@@ -57,18 +57,21 @@ Example:
 
 --------------------------------------------------------------------------------
 
-nvof.GetMvTools(clip clip [, clip source = clip, int tr = 1, int block_size = 8, int block_size_v = block_size, int overlap = 0, int overlap_v = overlap, int pel = 1, int fallback_sad = -1, int clipped_sad = -1, bool get_cost = False, int gpu = 0])
+nvof.GetMvTools(clip clip [, clip source = clip, int tr = 1, int block_size = 8, int block_size_v = block_size, int overlap = 0, int overlap_v = overlap, int pel = 1, int fallback_sad = -1, int clipped_sad = -1, bool get_cost = False, int gpu = 0, bool bidirectional = False])
 	clip: The 8-bit clip to calculate NVOF on.
 	source: Optional source clip whose format metadata should be mirrored for MVTools consumers. Must match clip size and frame count and use integer samples up to 16 bits.
 	tr: Temporal radius. Valid values are 1 to 3.
 	block_size, block_size_v, overlap, overlap_v, pel, fallback_sad, clipped_sad: Same meaning as nvof.ToMvTools.
 	get_cost: Boolean flag whether to request the cost field from NVOF API.
 	gpu: The id of GPU used for the flow calculation.
+	bidirectional: Boolean flag whether to use NV_OF_PRED_DIRECTION_BOTH. The default False uses forward-only NVOF calls because it can be faster on some GPUs/drivers.
 
-Calculates bidirectional NVOF pairs and returns MVTools-compatible vector clips directly, without first creating intermediate YUV444PS flow clips. The returned clip array is ordered as:
+Returns MVTools-compatible vector clips directly, without first creating intermediate YUV444PS flow clips. The returned clip array is ordered as:
 	[bwd1, fwd1, bwd2, fwd2, bwd3, fwd3]
 
 Use the first 2 * tr clips with mv.Degrain1, mv.Degrain2, or mv.Degrain3. Positive-distance clips are written as MVTools backward vectors and negative-distance clips are written as forward vectors.
+
+By default each requested direction is calculated with regular forward NVOF execution. Setting bidirectional=True computes both directions for each frame pair with NV_OF_PRED_DIRECTION_BOTH and can help when the driver/GPU makes that path faster than two forward-only calls.
 
 Example:
 	mvs = core.nvof.GetMvTools(src8, source=src, tr=2, block_size=8, overlap=4, pel=1)
